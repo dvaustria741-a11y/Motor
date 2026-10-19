@@ -23,6 +23,7 @@
 static const float PI = 3.14159265f;
 static inline float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 static inline float lerpf(float a, float b, float t) { return a + (b - a) * t; }
+static inline uint8_t u8(float f) { return (uint8_t)(f < 0 ? 0 : (f > 255 ? 255 : f)); }
 static inline float sgn(float v) { return v < 0 ? -1.f : 1.f; }
 
 // ------------------------------------------------------------------ math
@@ -413,6 +414,7 @@ static const Glyph FONT[] = {
     {'-', {0,0,0,0x1F,0,0,0}}, {'.', {0,0,0,0,0,0x0C,0x0C}}, {':', {0,0x0C,0x0C,0,0x0C,0x0C,0}},
     {'!', {0x04,0x04,0x04,0x04,0x04,0,0x04}}, {'/', {0x01,0x02,0x02,0x04,0x08,0x08,0x10}},
     {'%', {0x18,0x19,0x02,0x04,0x08,0x13,0x03}}, {'+', {0,0x04,0x04,0x1F,0x04,0x04,0}},
+    {'<', {0x02,0x04,0x08,0x10,0x08,0x04,0x02}}, {'>', {0x08,0x04,0x02,0x01,0x02,0x04,0x08}},
 };
 static const uint8_t* glyphFor(char c) {
     if (c >= 'a' && c <= 'z') c = (char)(c - 32);
@@ -475,12 +477,12 @@ static const Tier TIERS[3] = {
     {1.00f, 0.70f, 18, 2, true, 270.f, 60, true, 8, "HIGH"},
 };
 
-struct Settings { int steer = 0; int quality = 0; int paint = 0; unsigned best = 0; };
+struct Settings { int steer = 1; int quality = 0; int paint = 0; unsigned best = 0; int cam = 0; };
 static const uint8_t PAINTS[8][3] = {{225, 25, 40}, {20, 120, 255}, {20, 220, 120}, {255, 140, 0}, {170, 60, 255}, {240, 240, 245}, {255, 40, 160}, {255, 225, 40}};
 static const uint8_t CAR_COLS[10][3] = {{200, 30, 30}, {230, 230, 235}, {30, 60, 160}, {20, 20, 24}, {170, 175, 185}, {20, 120, 80}, {220, 140, 20}, {120, 30, 140}, {60, 70, 80}, {200, 190, 60}};
 
 struct Car { int type, lane; float x, dz, v, prevDz; float tint[3]; bool onc; float hw, hl; };
-struct Bld { int model; float x, dz, scale, yaw, depth, seed; };
+struct Bld { int model; float x, y, top, dz, scale, yaw, depth, seed; };
 
 enum State { ST_MENU, ST_PLAY, ST_CRASH, ST_PAUSE, ST_OVER };
 
@@ -488,7 +490,7 @@ static const char* CAR_NAMES[10] = {"wagonbody", "suvbody", "sportbody", "sedanb
 static const int NUM_BLD = 19;
 
 struct Btn { float x, y, w, h; int id; };
-enum { B_BRAKE = 1, B_NITRO, B_PAUSE, B_PLAY, B_STEER, B_QUAL, B_PAINT, B_RETRY, B_MENU, B_RESUME };
+enum { B_BRAKE = 1, B_NITRO, B_PAUSE, B_PLAY, B_STEER, B_QUAL, B_PAINT, B_RETRY, B_MENU, B_RESUME, B_GAS, B_LEFT, B_RIGHT, B_CAM };
 
 struct Touch { int id = -1; float x = 0, y = 0, sx = 0, sy = 0; int role = 0; };
 
@@ -515,7 +517,7 @@ struct Engine {
     float score = 0; int combo = 1; float comboT = 0; float popupT = 0; int popupVal = 0; int popupCombo = 1;
     float crashT = 0, crashVx = 0, crashY = 0, crashYv = 0, crashRoll = 0, crashSpin = 0, crashPitch = 0, shake = 0, menuT = 0;
     float timeScale = 1.f; float tAcc = 0; bool newBest = false;
-    std::vector<Car> traffic; std::vector<Bld> bl[2]; float front[2] = {0, 0};
+    std::vector<Car> traffic; std::vector<Bld> bl[4]; float front[4] = {0, 0, 0, 0}; bool fpView = false, gasHeld = false; float steerBtn = 0;
     // input
     Touch touches[10]; float steerTouch = 0, steerTilt = 0, tiltRaw = 0, steerCmd = 0; bool tiltOk = false;
     std::vector<Btn> btns; double lastUiTap = 0;
@@ -528,7 +530,7 @@ struct Engine {
 
     // ---------- persistence
     std::string path(const char* f) { return std::string(app->activity->internalDataPath) + "/" + f; }
-    void loadSettings() { FILE* f = fopen(path("settings.dat").c_str(), "rb"); if (f) { Settings s; if (fread(&s, sizeof s, 1, f) == 1) st = s; fclose(f); } if (st.paint < 0 || st.paint > 7) st.paint = 0; if (st.steer < 0 || st.steer > 2) st.steer = 0; if (st.quality < 0 || st.quality > 3) st.quality = 0; }
+    void loadSettings() { FILE* f = fopen(path("settings.dat").c_str(), "rb"); if (f) { Settings s = st; size_t n = fread(&s, 1, sizeof s, f); if (n >= 16) st = s; fclose(f); } if (st.paint < 0 || st.paint > 7) st.paint = 0; if (st.steer < 0 || st.steer > 3) st.steer = 1; if (st.cam < 0 || st.cam > 1) st.cam = 0; if (st.quality < 0 || st.quality > 3) st.quality = 0; }
     void saveSettings() { FILE* f = fopen(path("settings.dat").c_str(), "wb"); if (f) { fwrite(&st, sizeof st, 1, f); fclose(f); } }
 
     void pickTier() {
@@ -666,22 +668,27 @@ struct Engine {
             traffic.push_back(c); return;
         }
     }
-    void spawnBuilding(int side) {
+    void spawnBuilding(int li) {   // li: 0/1 = near rooftops below the bridge (L/R), 2/3 = far skyline (L/R)
+        int layer = li >> 1, side = li & 1;
         Bld b{}; b.model = (int)(rnd() * NUM_BLD) % NUM_BLD; Model& m = blds[b.model];
         float ex = m.mx.x - m.mn.x, ey = m.mx.y - m.mn.y, ez = m.mx.z - m.mn.z;
-        float hWorld = clampf(ey * 0.2f, 16.f, 60.f); b.scale = hWorld / std::max(ey, 1.f);
+        float hWorld = layer ? clampf(ey * 0.3f, 34.f, 95.f) : clampf(ey * 0.2f, 18.f, 60.f);
+        b.scale = hWorld / std::max(ey, 1.f);
         int q = (int)(rnd() * 4); b.yaw = q * PI * 0.5f; bool odd = q & 1;
         float wx = (odd ? ez : ex) * b.scale, wz = (odd ? ex : ez) * b.scale;
-        b.depth = std::max(wz, 8.f); b.x = (side ? 1.f : -1.f) * (13.5f + wx * 0.5f + rnd() * 4.f);
-        b.dz = front[side] + b.depth * 0.5f; front[side] += b.depth + 2.f + rnd() * 6.f; b.seed = rnd() * 50.f;
-        bl[side].push_back(b);
+        b.depth = std::max(wz, 8.f);
+        b.top = layer ? rndr(-4.f, 42.f) : -rndr(3.f, 16.f); b.y = b.top - hWorld;
+        float xo = layer ? 34.f + rnd() * 34.f : 11.5f + rnd() * 3.f;
+        b.x = (side ? 1.f : -1.f) * (xo + wx * 0.5f);
+        b.dz = front[li] + b.depth * 0.5f; front[li] += b.depth + (layer ? 6.f + rnd() * 22.f : 2.f + rnd() * 6.f); b.seed = rnd() * 50.f;
+        bl[li].push_back(b);
     }
     void resetWorld() {
-        traffic.clear(); bl[0].clear(); bl[1].clear(); front[0] = front[1] = -60.f;
-        for (int s = 0; s < 2; s++) while (front[s] < T().drawDist + 40) spawnBuilding(s);
+        traffic.clear();
+        for (int s = 0; s < 4; s++) { bl[s].clear(); front[s] = -60.f; while (front[s] < T().drawDist + 40) spawnBuilding(s); }
     }
     void startGame() {
-        resetWorld(); px = laneX(3); vx = 0; pv = 18.f; lean = pitch = 0; dist = 0; nitro = 1.f; score = 0; combo = 1; comboT = 0;
+        resetWorld(); px = laneX(3); vx = 0; pv = 22.f; lean = pitch = 0; dist = 0; nitro = 1.f; score = 0; combo = 1; comboT = 0;
         crashT = 0; shake = 0; timeScale = 1.f; newBest = false; popupT = 0;
         for (int i = 0; i < 8; i++) spawnCar(40.f + i * 26.f, 60.f + i * 26.f);
         state = ST_PLAY;
@@ -699,23 +706,24 @@ struct Engine {
         float dt = dtReal * (state == ST_CRASH ? timeScale : 1.f);
         if (state == ST_PAUSE) return;
         steerCmd = 0;
-        if (st.steer == 0 || !tiltOk) steerCmd = steerTouch; else steerCmd = steerTilt;
+        if (st.steer == 3) steerCmd = 0; else if (st.steer == 0 || !tiltOk) steerCmd = steerTouch; else steerCmd = steerTilt;
         steerCmd = clampf(steerCmd, -1.f, 1.f);
         menuT += dtReal; shake = std::max(0.f, shake - dtReal * (state == ST_CRASH ? 0.7f : 2.5f));
 
         if (state == ST_MENU) { pv = 10.f; }
         else if (state == ST_PLAY) {
             nitroOn = false;
-            bool wantNitro = false, wantBrake = false;
-            for (auto& t : touches) if (t.id >= 0) { if (t.role == B_NITRO) wantNitro = true; if (t.role == B_BRAKE) wantBrake = true; }
-            braking = wantBrake;
+            bool wantNitro = false, wantBrake = false, wantGas = false, bl_ = false, br_ = false;
+            for (auto& t : touches) if (t.id >= 0) { if (t.role == B_NITRO) wantNitro = true; if (t.role == B_BRAKE) wantBrake = true; if (t.role == B_GAS) wantGas = true; if (t.role == B_LEFT) bl_ = true; if (t.role == B_RIGHT) br_ = true; }
+            steerBtn = (br_ ? 1.f : 0.f) - (bl_ ? 1.f : 0.f); if (st.steer == 3) steerCmd = steerBtn;
+            braking = wantBrake; gasHeld = (wantGas || wantNitro) && !wantBrake;
             if (wantNitro && nitro > 0.02f && !wantBrake) { nitroOn = true; nitro = std::max(0.f, nitro - dt * 0.22f); }
             else if (!wantNitro) nitro = std::min(1.f, nitro + dt * 0.06f);
             float vlim = nitroOn ? VBOOST : VMAX;
             float a = 9.5f * (nitroOn ? 1.8f : 1.f) * (1.f - powf(clampf(pv / vlim, 0.f, 1.2f), 2.f));
             if (pv > vlim) a = -6.f;
             float drag = 0.5f + 0.0006f * pv * pv;
-            float accel = wantBrake ? -26.f : (a - drag * 0.35f);
+            float accel = wantBrake ? -26.f : (gasHeld ? a - drag * 0.35f : -(1.0f + 0.0005f * pv * pv));
             pv = std::max(0.f, pv + accel * dt);
             // steering (needs speed, gets heavier when fast)
             float gate = clampf(pv / 7.f, 0.f, 1.f), latMax = lerpf(9.5f, 5.6f, clampf(pv / VMAX, 0.f, 1.f));
@@ -748,7 +756,7 @@ struct Engine {
         lean += ((state == ST_PLAY ? -clampf(vx * 0.055f * (0.5f + pv / 60.f), -0.62f, 0.62f) : 0.f) - lean) * std::min(1.f, dt * 7.f);
 
         // ---- buildings
-        for (int s = 0; s < 2; s++) {
+        for (int s = 0; s < 4; s++) {
             front[s] -= pv * dt;
             for (auto& b : bl[s]) b.dz -= pv * dt;
             bl[s].erase(std::remove_if(bl[s].begin(), bl[s].end(), [](const Bld& b) { return b.dz + b.depth < -70.f; }), bl[s].end());
@@ -812,6 +820,7 @@ struct Engine {
 
     void render(double tNow) {
         float speedF = clampf(pv / VMAX, 0.f, 1.2f);
+        fpView = (st.cam == 1 && state == ST_PLAY);
         // camera
         float fov = (58.f + speedF * 20.f + (nitroOn ? 7.f : 0.f)) * PI / 180.f;
         float sh = shake * 0.12f + speedF * 0.015f;
@@ -820,11 +829,12 @@ struct Engine {
         if (state == ST_MENU) {
             float a = 0.9f + sinf(menuT * 0.35f) * 0.55f; cp = {px + sinf(a) * 4.6f, 1.5f, cosf(a) * 4.6f}; tg = {px, 0.75f, 0.2f};
         } else {
-            float h = 2.35f - speedF * 0.25f, d = 5.6f - speedF * 0.4f - (nitroOn ? 0.4f : 0.f);
-            cp = {px * 0.6f + ox, h + oy + (state == ST_CRASH ? 0.6f : 0.f), d}; tg = {px * 0.8f, 0.95f, -13.f};
+            if (fpView) { cp = {px + ox * 0.5f, 1.38f + bob + oy * 0.5f, -0.12f}; tg = {px + vx * 0.05f, 1.28f + pitch * 6.f, -14.f}; }
+            else { float h = 1.75f - speedF * 0.1f + (state == ST_CRASH ? 0.5f : 0.f), d = 3.9f - speedF * 0.3f - (nitroOn ? 0.3f : 0.f);
+                   cp = {px * 0.9f + ox, h + oy, d}; tg = {px * 0.95f, 1.05f, -12.f}; }
         }
         camPos = cp;
-        float roll = (state == ST_PLAY ? lean * 0.35f : 0.f);
+        float roll = (state == ST_PLAY ? lean * (fpView ? 0.75f : 0.3f) : 0.f);
         V3 up = {sinf(-roll), cosf(roll), 0};
         view = mLookAt(cp, tg, up); proj = mPersp(fov, (float)W / H, 0.4f, T().drawDist + 120.f); vp = mMul(proj, view);
         camRight = {view.m[0], view.m[4], view.m[8]}; camUp = {view.m[1], view.m[5], view.m[9]};
@@ -857,12 +867,13 @@ struct Engine {
         setKind(8, 1, 1, 1);
         M4 mm = mMul(mTrans(0, 0, -150.f), mScale(8.2f, 1.f, 180.f)); glUniformMatrix4fv(u.model, 1, GL_FALSE, mm.m); glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
         setKind(9, 1, 1, 1);
-        for (int s = -1; s <= 1; s += 2) { mm = mMul(mTrans(s * 129.2f, 0, -150.f), mScale(121.f, 1.f, 180.f)); glUniformMatrix4fv(u.model, 1, GL_FALSE, mm.m); glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0); }
+        mm = mMul(mTrans(0, -110.f, -150.f), mScale(400.f, 1.f, 400.f)); glUniformMatrix4fv(u.model, 1, GL_FALSE, mm.m); glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
 
         // barriers, lamp poles (dynamic batches)
         const uint8_t white[4] = {255, 255, 255, 255}, poleC[4] = {55, 58, 70, 255}, lampC[4] = {255, 200, 130, 255};
         bBarrier.clear(); bPole.clear(); bLamp.clear(); bShadow.clear(); bGlow.clear();
         for (int s = -1; s <= 1; s += 2) bBarrier.box({s * 8.35f, 0.45f, -140.f}, {0.32f, 0.45f, 180.f}, white);
+        bBarrier.box({0, -0.62f, -140.f}, {10.f, 0.6f, 180.f}, white);   // bridge deck slab
         float spacing = 32.f; float firstK = floorf((distMod - 60.f) / spacing);
         int nL = T().lamps;
         for (int k = 0; k < nL + 3; k++) {
@@ -884,9 +895,9 @@ struct Engine {
 
         // buildings
         setKind(6, 1, 1, 1);
-        for (int s = 0; s < 2; s++) for (auto& b : bl[s]) {
+        for (int s = 0; s < 4; s++) for (auto& b : bl[s]) {
             if (b.dz - b.depth > T().drawDist + 20.f) continue;
-            M4 bm = mMul(mTrans(b.x, 0, -b.dz), mMul(mRotY(b.yaw), mScale(b.scale, b.scale, b.scale)));
+            M4 bm = mMul(mTrans(b.x, b.y, -b.dz), mMul(mRotY(b.yaw), mScale(b.scale, b.scale, b.scale)));
             glUniform1f(u.seed, b.seed); glUniform1i(u.kind, 6); glUniformMatrix4fv(u.model, 1, GL_FALSE, bm.m);
             for (auto& p : blds[b.model].parts) { if (!p.vao || p.idx.empty()) continue; glBindVertexArray(p.vao); glDrawElements(GL_TRIANGLES, (GLsizei)p.idx.size(), GL_UNSIGNED_SHORT, 0); }
         }
@@ -897,14 +908,14 @@ struct Engine {
             if (state != ST_MENU) for (auto& c : traffic) {
                 if (c.dz > T().drawDist + 10.f) continue;
                 int lod = (T().carHiNear && c.dz < 48.f && c.dz > -20.f) ? 0 : 1;
-                M4 cm = mMul(mTrans(c.x, 0, -c.dz), mRotY(c.onc ? PI : 0.f));
+                M4 cm = mMul(mTrans(c.x, 0, -c.dz), mRotY(c.onc ? 0.f : PI));
                 drawModel(cars[c.type][lod], cm, c.tint, pass);
             }
             // player bike + rider
             Model& bm = bike[T().bikeLod]; M4 bmat = bikeMatrix();
             float tint[3] = {PAINTS[st.paint][0] / 255.f, PAINTS[st.paint][1] / 255.f, PAINTS[st.paint][2] / 255.f};
-            drawModel(bm, bmat, tint, pass);
-            if (pass == 0) {
+            if (!fpView) drawModel(bm, bmat, tint, pass);
+            if (pass == 0 && !fpView) {
                 glUniformMatrix4fv(u.model, 1, GL_FALSE, bmat.m); setKind(4, 1, 1, 1); glUniform3f(u.tint, 1, 1, 1);
                 bRider.draw();
             }
@@ -919,10 +930,10 @@ struct Engine {
             float d = std::max(c.dz, 1.f); float sz = 0.35f + d * 0.0105f;
             float a = clampf(1.f - d / (T().drawDist + 20.f), 0.f, 1.f);
             if (c.onc) {   // headlights face the player (+z)
-                uint8_t col[4] = {(uint8_t)(255 * a + 40), (uint8_t)(245 * a + 30), (uint8_t)(210 * a + 20), 255};
+                uint8_t col[4] = {u8(255 * a + 40), u8(245 * a + 30), u8(210 * a + 20), 255};
                 for (int s = -1; s <= 1; s += 2) bGlow.sprite({c.x + s * c.hw * 0.62f, 0.72f, -c.dz + c.hl * 0.95f}, camRight, camUp, sz, col);
             } else {       // tail-lights face the player (+z)
-                uint8_t col[4] = {(uint8_t)(255 * a + 20), (uint8_t)(20 * a), (uint8_t)(30 * a), 255};
+                uint8_t col[4] = {u8(255 * a + 20), u8(20 * a), u8(30 * a), 255};
                 for (int s = -1; s <= 1; s += 2) bGlow.sprite({c.x + s * c.hw * 0.66f, 0.78f, -c.dz + c.hl * 0.97f}, camRight, camUp, sz * 0.8f, col);
             }
         }
@@ -930,11 +941,16 @@ struct Engine {
             float zAbsLamp = (firstK + k + 1) * spacing; float zWorld = -(zAbsLamp - distMod);
             if (zWorld > 40.f || zWorld < -T().drawDist) continue;
             float d = std::max(-zWorld, 3.f); float a = clampf(1.f - d / T().drawDist, 0.f, 1.f);
-            uint8_t col[4] = {(uint8_t)(255 * a), (uint8_t)(170 * a), (uint8_t)(90 * a), 255};
+            uint8_t col[4] = {u8(255 * a), u8(170 * a), u8(90 * a), 255};
             for (int s = -1; s <= 1; s += 2) bGlow.sprite({s * 6.7f, 7.7f, zWorld}, camRight, camUp, 0.9f + d * 0.012f, col);
         }
-        // bike lights
-        { M4 bmat = bikeMatrix(); (void)bmat; uint8_t tl[4] = {255, 30, 40, 255}; V3 p = {px, 0.95f + bob, 1.18f}; bGlow.sprite(p, camRight, camUp, 0.28f, tl); }
+        for (int s = 0; s < 4; s++) for (auto& b : bl[s]) {   // rooftop beacons
+            if (b.dz < -5.f || b.dz > T().drawDist) continue;
+            float bl2 = 0.5f + 0.5f * sinf((float)tNow * 2.2f + b.seed); float fd = clampf(1.f - b.dz / T().drawDist, 0.f, 1.f);
+            uint8_t col[4] = {u8(255 * bl2 * fd), u8(30 * bl2 * fd), u8(40 * bl2 * fd), 255};
+            bGlow.sprite({b.x, b.top + 0.6f, -b.dz}, camRight, camUp, 1.2f + b.dz * 0.012f, col);
+        }
+        if (!fpView) { uint8_t tl[4] = {255, 30, 40, 255}; V3 p = {px, 0.95f + bob, 1.18f}; bGlow.sprite(p, camRight, camUp, 0.28f, tl); }
         setKind(12, 1, 1, 1, 1.f); bShadow.draw();
         glBlendFunc(GL_ONE, GL_ONE); setKind(11, 1, 1, 1, 1.f); bGlow.draw();
         glDepthMask(GL_TRUE); glDisable(GL_BLEND);
@@ -943,7 +959,7 @@ struct Engine {
         glBindFramebuffer(GL_FRAMEBUFFER, 0); glViewport(0, 0, W, H); glDisable(GL_DEPTH_TEST);
         glUseProgram(progBlit); glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, fboTex);
         glUniform1i(glGetUniformLocation(progBlit, "uTex"), 0);
-        float blur = T().blur ? clampf((pv - 30.f) / 70.f, 0.f, 1.f) * 0.045f + (nitroOn ? 0.02f : 0.f) : 0.f;
+        float blur = 0.f;
         glUniform1f(glGetUniformLocation(progBlit, "uBlur"), blur); glUniform1f(glGetUniformLocation(progBlit, "uVig"), 0.55f);
         glBindVertexArray(emptyVao); glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -981,15 +997,15 @@ struct Engine {
         }
         if (state == ST_PLAY) {
             // score / best
-            snprintf(buf, sizeof buf, "%u", (unsigned)score); ui.text("SCORE", 18 * u, 12 * u, 2 * u, dim); ui.text(buf, 18 * u, 24 * u, 4 * u, white);
-            snprintf(buf, sizeof buf, "BEST %u", st.best); ui.text(buf, 18 * u, 56 * u, 2 * u, dim);
-            snprintf(buf, sizeof buf, "%.2f KM", dist / 1000.0); ui.text(buf, W * 0.5f, 12 * u, 2.4f * u, cyan, 1);
-            if (combo > 1) { snprintf(buf, sizeof buf, "COMBO X%d", combo); ui.text(buf, W * 0.5f, 28 * u, 3 * u, yel, 1); float bw = 120 * u * clampf(comboT / 3.2f, 0.f, 1.f); ui.rect(W * 0.5f - 60 * u, 50 * u, bw, 3 * u, yel); }
-            if (px < 0) ui.text("ONCOMING X2", W * 0.5f, 60 * u, 2.4f * u, pink, 1);
+            snprintf(buf, sizeof buf, "%u", (unsigned)score); ui.text("SCORE", 18 * u, 10 * u, 1.8f * u, dim); ui.text(buf, 18 * u, 28 * u, 3.6f * u, white);
+            snprintf(buf, sizeof buf, "BEST %u", st.best); ui.text(buf, 18 * u, 60 * u, 1.8f * u, dim);
+            snprintf(buf, sizeof buf, "%.2f KM", dist / 1000.0); ui.text(buf, W * 0.5f, 10 * u, 2.2f * u, cyan, 1);
+            if (combo > 1) { snprintf(buf, sizeof buf, "COMBO X%d", combo); ui.text(buf, W * 0.5f, 34 * u, 2.8f * u, yel, 1); float bw = 120 * u * clampf(comboT / 3.2f, 0.f, 1.f); ui.rect(W * 0.5f - 60 * u, 58 * u, bw, 3 * u, yel); }
+            if (px < 0) ui.text("ONCOMING X2", W * 0.5f, 68 * u, 2.2f * u, pink, 1);
             if (popupT > 0) { uint8_t pc[4] = {255, 220, 60, (uint8_t)(clampf(popupT, 0.f, 1.f) * 255)}; snprintf(buf, sizeof buf, "NEAR MISS +%d", popupVal); ui.text(buf, W * 0.5f, H * 0.28f - (1.2f - popupT) * 14 * u, 4 * u, pc, 1); }
             // speedometer
             float bx = W * 0.5f, by = H - 48 * u; float segW = 6.2f * u; int segs = 32; float tot = segs * segW;
-            snprintf(buf, sizeof buf, "%d", (int)kmh); ui.text(buf, bx, by - 36 * u, 6 * u, white, 1); ui.text("KM/H", bx + 54 * u, by - 12 * u, 2.2f * u, cyan, 0);
+            snprintf(buf, sizeof buf, "%d", (int)kmh); ui.text(buf, bx, by - 54 * u, 5.5f * u, white, 1); ui.text("KM/H", bx + 56 * u, by - 24 * u, 2.2f * u, cyan, 0);
             float fillF = clampf(pv / VBOOST, 0.f, 1.f);
             for (int i = 0; i < segs; i++) {
                 float f = (float)i / segs; bool on = f < fillF;
@@ -997,12 +1013,19 @@ struct Engine {
                 ui.rect(bx - tot * 0.5f + i * segW, by + (i % 2 ? 0 : 0), segW - 1.5f * u, 8 * u, c);
             }
             // buttons
-            float bw = 120 * u, bh = 78 * u;
-            button(18 * u, H - bh - 18 * u, bw, bh, B_BRAKE, "BRAKE");
-            button(W - bw - 18 * u, H - bh - 18 * u, bw, bh, B_NITRO, "NITRO", nitroOn);
-            { float nf = nitro; uint8_t nc[4] = {70, 170, 255, 230}; ui.rect(W - bw - 18 * u, H - 18 * u - 7 * u, bw * nf, 7 * u, nc); }
+            float gw = 130 * u, gh = 84 * u, nh = 50 * u;
+            button(W - gw - 18 * u, H - gh - 18 * u, gw, gh, B_GAS, "GAS", gasHeld, 3.2f * u);
+            button(W - gw - 18 * u, H - gh - 18 * u - 8 * u - nh, gw, nh, B_NITRO, "NITRO", nitroOn, 2.4f * u);
+            { uint8_t nc[4] = {70, 170, 255, 230}; ui.rect(W - gw - 18 * u, H - gh - 18 * u - 8 * u - 6 * u, gw * nitro, 6 * u, nc); }
+            if (st.steer != 3) button(18 * u, H - gh - 18 * u, 130 * u, gh, B_BRAKE, "BRAKE", braking, 2.6f * u);
+            else {
+                button(18 * u, H - 70 * u - 18 * u, 70 * u, 70 * u, B_LEFT, "<", false, 5.f * u);
+                button(96 * u, H - 70 * u - 18 * u, 70 * u, 70 * u, B_RIGHT, ">", false, 5.f * u);
+                button(18 * u, H - 70 * u - 18 * u - 8 * u - 54 * u, 148 * u, 54 * u, B_BRAKE, "BRAKE", braking, 2.4f * u);
+            }
+            button(W - 92 * u, 12 * u, 40 * u, 32 * u, B_CAM, "CAM", false, 1.4f * u);
             button(W - 44 * u, 12 * u, 32 * u, 32 * u, B_PAUSE, "II", false, 2.6f * u);
-            if (st.steer != 0 && tiltOk) { /* tilt hint bar */ float cx = W * 0.5f, cy = H - 14 * u; uint8_t tc[4] = {255, 255, 255, 90}; ui.rect(cx - 50 * u, cy, 100 * u, 2 * u, tc); uint8_t pc[4] = {120, 235, 255, 255}; ui.rect(cx + steerCmd * 48 * u - 2 * u, cy - 3 * u, 4 * u, 8 * u, pc); }
+            if ((st.steer == 1 || st.steer == 2) && tiltOk) { /* tilt hint bar */ float cx = W * 0.5f, cy = H - 14 * u; uint8_t tc[4] = {255, 255, 255, 90}; ui.rect(cx - 50 * u, cy, 100 * u, 2 * u, tc); uint8_t pc[4] = {120, 235, 255, 255}; ui.rect(cx + steerCmd * 48 * u - 2 * u, cy - 3 * u, 4 * u, 8 * u, pc); }
         } else if (state == ST_MENU) {
             ui.rect(0, 0, (float)W, (float)H, shade);
             uint8_t glow[4] = {255, 40, 160, 200};
@@ -1011,10 +1034,11 @@ struct Engine {
             snprintf(buf, sizeof buf, "BEST %u", st.best); ui.text(buf, 44 * u, 250 * u, 3.2f * u, yel);
             float mx = W - 190 * u, bw = 170 * u, bh = 46 * u;
             button(mx, 40 * u, bw, 64 * u, B_PLAY, "PLAY", true, 4.2f * u);
-            const char* sm[3] = {"STEER: TOUCH", "STEER: TILT", "TILT: INVERT"};
-            button(mx, 120 * u, bw, bh, B_STEER, sm[st.steer], false, 1.9f * u);
+            const char* sm[4] = {"STEER: TOUCH", "STEER: TILT", "TILT: INVERT", "STEER: BUTTONS"};
+            button(mx, 120 * u, bw, bh, B_STEER, sm[st.steer], false, 1.6f * u);
             snprintf(buf, sizeof buf, "GFX: %s", st.quality == 0 ? "AUTO" : TIERS[st.quality - 1].name); button(mx, 120 * u + (bh + 10 * u), bw, bh, B_QUAL, buf, false, 2.2f * u);
             button(mx, 120 * u + 2 * (bh + 10 * u), bw, bh, B_PAINT, "PAINT", false, 2.2f * u);
+            button(mx, 120 * u + 3 * (bh + 10 * u), bw, bh, B_CAM, st.cam ? "CAM: 1ST" : "CAM: 3RD", false, 2.2f * u);
             uint8_t pcol[4] = {PAINTS[st.paint][0], PAINTS[st.paint][1], PAINTS[st.paint][2], 255}; ui.rect(mx + bw - 34 * u, 120 * u + 2 * (bh + 10 * u) + 10 * u, 24 * u, bh - 20 * u, pcol);
             snprintf(buf, sizeof buf, "%s  %.0f%%", TIERS[tier].name, scale * 100); ui.text(buf, W - 20 * u, H - 22 * u, 1.8f * u, dim, 2);
         } else if (state == ST_PAUSE) {
@@ -1044,7 +1068,8 @@ struct Engine {
             case B_PAUSE: if (state == ST_PLAY) state = ST_PAUSE; break;
             case B_RESUME: state = ST_PLAY; break;
             case B_MENU: toMenu(); break;
-            case B_STEER: st.steer = (st.steer + 1) % 3; saveSettings(); break;
+            case B_STEER: st.steer = (st.steer + 1) % 4; saveSettings(); break;
+            case B_CAM: st.cam ^= 1; saveSettings(); break;
             case B_PAINT: st.paint = (st.paint + 1) % 8; saveSettings(); break;
             case B_QUAL: st.quality = (st.quality + 1) % 4; saveSettings(); pickTier(); scale = T().scaleMax; if (hasGL) makeFbo(); resetWorld(); break;
         }
@@ -1057,7 +1082,7 @@ struct Engine {
             int id = AMotionEvent_getPointerId(ev, idx); float x = AMotionEvent_getX(ev, idx), y = AMotionEvent_getY(ev, idx);
             for (auto& t : touches) if (t.id < 0) {
                 t.id = id; t.x = t.sx = x; t.y = t.sy = y; int h = hit(x, y); t.role = 0;
-                if (h == B_BRAKE || h == B_NITRO) t.role = h;
+                if (h == B_BRAKE || h == B_NITRO || h == B_GAS || h == B_LEFT || h == B_RIGHT) t.role = h;
                 else if (h) { uiPress(h); t.role = -1; }
                 else if (state == ST_PLAY) t.role = 100;   // steering drag
                 break;
@@ -1070,7 +1095,7 @@ struct Engine {
             else { Touch* t = find(AMotionEvent_getPointerId(ev, idx)); if (t) t->id = -1; }
         }
         steerTouch = 0;
-        for (auto& t : touches) if (t.id >= 0 && t.role == 100) steerTouch = clampf((t.x - t.sx) / (0.11f * W), -1.f, 1.f);
+        for (auto& t : touches) if (t.id >= 0 && (t.role == 100 || (t.role == B_GAS && st.steer == 0))) { float d = (t.x - t.sx) / (0.11f * W); if (fabsf(d) > 0.12f) steerTouch = clampf(d, -1.f, 1.f); }
     }
 
     void initSensors() {

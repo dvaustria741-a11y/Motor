@@ -4,8 +4,8 @@ Night-city highway motorbike dodger. C++17 + OpenGL ES 3.0 (NativeActivity), APK
 **Get the APK:** Actions tab -> latest "Build APK" run -> Artifacts -> `NeonRider-apk`.
 
 ## Controls
-- Speed is automatic, you can only go forward (no reverse).
-- Steer: tilt phone (STEER: TILT, flip with TILT: INVERT if reversed) or drag a finger left/right (TOUCH).
+- GAS (right thumb) accelerates, BRAKE slows, NITRO boosts. No reverse.
+- Steer: tilt (default), drag a finger, or on-screen arrows. CAM button switches 3rd/1st person.
 - BRAKE (bottom-left) / NITRO (bottom-right). Left 2 lanes are oncoming traffic: 2x score but dangerous.
 - Near-misses build a combo (up to x8).
 
