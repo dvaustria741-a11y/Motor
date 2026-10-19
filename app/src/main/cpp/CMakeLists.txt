@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.22)
+project(motor C CXX)
+set(GLUE ${ANDROID_NDK}/sources/android/native_app_glue)
+add_library(app_glue STATIC ${GLUE}/android_native_app_glue.c)
+target_include_directories(app_glue PUBLIC ${GLUE})
+add_library(motor SHARED main.cpp)
+target_include_directories(motor PRIVATE ${GLUE})
+# keep ANativeActivity_onCreate visible
+set_target_properties(motor PROPERTIES LINK_FLAGS "-u ANativeActivity_onCreate")
+target_link_libraries(motor app_glue android EGL GLESv3 log m)

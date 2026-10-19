@@ -1,0 +1,27 @@
+name: Build APK
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK + CMake
+        run: sdkmanager "ndk;26.3.11579264" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.9' }
+      - name: Build APK
+        run: gradle --no-daemon assembleRelease
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk NeonRider.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeonRider-apk
+          path: NeonRider.apk
